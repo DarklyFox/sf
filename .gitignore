@@ -1,0 +1,20 @@
+# Never commit secrets or player data
+ops.json
+whitelist.json
+usercache.json
+banned-ips.json
+banned-players.json
+*.jks
+*.p12
+*.pem
+*.key
+.env
+# Never commit world data or logs
+world/
+world_nether/
+world_the_end/
+logs/
+*.log
+*.jar
+cache/
+libraries/
