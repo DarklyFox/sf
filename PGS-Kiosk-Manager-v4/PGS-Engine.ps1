@@ -24,9 +24,12 @@ $PolExplorer='Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
 $PolSystem='Software\Microsoft\Windows\CurrentVersion\Policies\System'
 $PolDesktop='Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop'
 $PolCmd='Software\Policies\Microsoft\Windows\System'
+$PolStore='Software\Policies\Microsoft\WindowsStore'
+$PolExplorer2='Software\Policies\Microsoft\Windows\Explorer'
 
 # Every feature the tool manages. To add one, add an entry here: each Regs item is a
 # DWORD written under the user's hive when the feature is ON and deleted when OFF.
+# AppLocker=$true additionally adds a per-user AppLocker rule that blocks the Microsoft Store.
 $PgsFeatures=[ordered]@{
  HideDrives   =@{Label='Hide drive icons in This PC (personal folders stay accessible)'; Regs=@(@{Sub=$PolExplorer;Name='NoDrives';Data=67108863})}
  TaskManager  =@{Label='Disable Task Manager'; Regs=@(@{Sub=$PolSystem;Name='DisableTaskMgr';Data=1})}
@@ -35,9 +38,13 @@ $PgsFeatures=[ordered]@{
  RunMenu      =@{Label='Remove Run (Win+R) from Start menu'; Regs=@(@{Sub=$PolExplorer;Name='NoRun';Data=1})}
  RegistryTools=@{Label='Disable Registry Editor'; Regs=@(@{Sub=$PolSystem;Name='DisableRegistryTools';Data=1})}
  Wallpaper    =@{Label='Prevent changing the desktop wallpaper'; Regs=@(@{Sub=$PolDesktop;Name='NoChangingWallPaper';Data=1})}
+ Store        =@{Label='Block Microsoft Store (Store policy + per-user AppLocker rule)'; Regs=@(@{Sub=$PolStore;Name='RemoveWindowsStore';Data=1},@{Sub=$PolExplorer2;Name='NoUseStoreOpenWith';Data=1}); AppLocker=$true}
  ShellBlock   =@{Label='Block the programs listed below (Explorer launch block, best effort)'; Regs=@(@{Sub=$PolExplorer;Name='DisallowRun';Data=1}); List="$PolExplorer\DisallowRun"}
 }
 $PgsDefaultBlocked=@('powershell.exe','powershell_ise.exe','pwsh.exe','cmd.exe','wt.exe','regedit.exe','reg.exe','mmc.exe')
+
+$PgsAppxDefaultRuleId='a9e18c21-ff8f-43cf-b9fc-db40eed693ba'
+$PgsStorePublisher='CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
 
 function Write-PgsLog([string]$Message) {
  try {
@@ -165,6 +172,94 @@ function Remove-PgsRegKey([string]$Hive,[string]$Sub) {
  [Microsoft.Win32.Registry]::Users.DeleteSubKeyTree("$Hive\$Sub",$false)
 }
 
+# ---- Microsoft Store blocking with AppLocker (machine policy, rule scoped to one user SID) ----
+
+# AppLocker is enforced on Pro, Enterprise and Education. Home editions ('Core') lack it.
+function Test-PgsAppLockerSupported {
+ try {
+  $edition=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop).EditionID
+  if($edition -match 'Core'){return $false}
+  return ([bool](Get-Command Set-AppLockerPolicy -ErrorAction SilentlyContinue) -and [bool](Get-Service AppIDSvc -ErrorAction SilentlyContinue))
+ } catch { return $false }
+}
+
+# The same user always gets the same rule ID, so the rule can be found and removed later.
+function Get-PgsStoreRuleId([string]$Sid) {
+ $md5=[Security.Cryptography.MD5]::Create()
+ try { ([guid]::new($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes("PGS-Store-$Sid")))).ToString() }
+ finally { $md5.Dispose() }
+}
+
+function Get-PgsLocalAppLocker {
+ $doc=[xml](Get-AppLockerPolicy -Local -Xml)
+ if($null -eq $doc.DocumentElement){$doc=[xml]'<AppLockerPolicy Version="1" />'}
+ $doc
+}
+
+function Find-PgsAppLockerRule([xml]$Doc,[string]$Id) {
+ @($Doc.DocumentElement.SelectNodes('//FilePublisherRule') | Where-Object {$_.GetAttribute('Id') -eq $Id})
+}
+
+function Test-PgsStoreRule([string]$Sid) {
+ if(-not (Test-PgsAppLockerSupported)){return $false}
+ (Find-PgsAppLockerRule (Get-PgsLocalAppLocker) (Get-PgsStoreRuleId $Sid)).Count -gt 0
+}
+
+function Add-PgsXmlFragment($Parent,[string]$Xml) {
+ $fragment=$Parent.OwnerDocument.CreateDocumentFragment(); $fragment.InnerXml=$Xml
+ [void]$Parent.AppendChild($fragment)
+}
+
+# Adds ($On) or removes the AppLocker rule that denies the Microsoft Store to one user.
+function Set-PgsStoreRule([string]$Sid,[string]$UserName,[bool]$On) {
+ if(-not (Test-PgsAppLockerSupported)) {
+  if($On){"${UserName}: this Windows edition has no AppLocker (Home). Only the Store policy was set, which Windows may ignore."}
+  return
+ }
+ $doc=Get-PgsLocalAppLocker
+ $id=Get-PgsStoreRuleId $Sid
+ $existing=Find-PgsAppLockerRule $doc $id
+ if(-not $On) {
+  if($existing.Count -eq 0){return}
+  foreach($node in $existing){[void]$node.ParentNode.RemoveChild($node)}
+  Save-PgsAppLocker $doc
+  "${UserName}: Microsoft Store AppLocker rule removed."
+  return
+ }
+ if($existing.Count -gt 0){return}
+ $collection=$doc.DocumentElement.SelectSingleNode("RuleCollection[@Type='Appx']")
+ if($null -eq $collection) {
+  $collection=$doc.CreateElement('RuleCollection')
+  $collection.SetAttribute('Type','Appx'); $collection.SetAttribute('EnforcementMode','NotConfigured')
+  [void]$doc.DocumentElement.AppendChild($collection)
+ }
+ $mode=$collection.GetAttribute('EnforcementMode')
+ if($mode -ne 'Enabled' -and $mode -ne 'AuditOnly') {
+  # Enforcing packaged-app rules blocks every app that is not allowed, so keep all signed
+  # packaged apps allowed for Everyone; only the PGS deny rules then take effect.
+  if((Find-PgsAppLockerRule $doc $PgsAppxDefaultRuleId).Count -eq 0) {
+   Add-PgsXmlFragment $collection "<FilePublisherRule Id=`"$PgsAppxDefaultRuleId`" Name=`"(Default Rule) All signed packaged apps`" Description=`"Allows members of the Everyone group to run packaged apps that are signed.`" UserOrGroupSid=`"S-1-1-0`" Action=`"Allow`"><Conditions><FilePublisherCondition PublisherName=`"*`" ProductName=`"*`" BinaryName=`"*`"><BinaryVersionRange LowSection=`"0.0.0.0`" HighSection=`"*`" /></FilePublisherCondition></Conditions></FilePublisherRule>"
+  }
+  $collection.SetAttribute('EnforcementMode','Enabled')
+ }
+ $ruleName=[Security.SecurityElement]::Escape("PGS: block Microsoft Store for $UserName")
+ $publisher=[Security.SecurityElement]::Escape($PgsStorePublisher)
+ Add-PgsXmlFragment $collection "<FilePublisherRule Id=`"$id`" Name=`"$ruleName`" Description=`"Added by PGS Kiosk Manager`" UserOrGroupSid=`"$Sid`" Action=`"Deny`"><Conditions><FilePublisherCondition PublisherName=`"$publisher`" ProductName=`"Microsoft.WindowsStore`" BinaryName=`"*`"><BinaryVersionRange LowSection=`"0.0.0.0`" HighSection=`"*`" /></FilePublisherCondition></Conditions></FilePublisherRule>"
+ Save-PgsAppLocker $doc
+ # AppLocker needs the Application Identity service.
+ try { Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\AppIDSvc' -Name Start -Value 2 -ErrorAction Stop } catch {}
+ try { Start-Service AppIDSvc -ErrorAction Stop } catch { Write-Warning "Could not start the Application Identity service (AppIDSvc): $($_.Exception.Message)" }
+ "${UserName}: Microsoft Store AppLocker rule added."
+ if($mode -eq 'AuditOnly'){Write-Warning "Packaged-app AppLocker rules are in Audit-only mode on this PC, so Store use is only logged, not blocked."}
+}
+
+function Save-PgsAppLocker([xml]$Doc) {
+ $tmp=Join-Path $env:TEMP ('pgs-applocker-'+[guid]::NewGuid().ToString('N')+'.xml')
+ $Doc.Save($tmp)
+ try { Set-AppLockerPolicy -XmlPolicy $tmp -ErrorAction Stop }
+ finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
+
 function Get-PgsSnapshot([string]$Hive,$User) {
  $values=@(); $lists=@()
  foreach($feature in $PgsFeatures.Values) {
@@ -178,10 +273,11 @@ function Get-PgsSnapshot([string]$Hive,$User) {
    $lists+=[pscustomobject]@{Sub=$feature.List;Present=($null -ne $items);Items=$items}
   }
  }
- [pscustomobject]@{Format='PGS-v4';Computer=$env:COMPUTERNAME;Name=$User.Name;SID=$User.SID;When=(Get-Date).ToString('o');Values=$values;Lists=$lists}
+ [pscustomobject]@{Format='PGS-v4';Computer=$env:COMPUTERNAME;Name=$User.Name;SID=$User.SID;When=(Get-Date).ToString('o');Values=$values;Lists=$lists
+  StoreAppLocker=[pscustomobject]@{Supported=(Test-PgsAppLockerSupported);RulePresent=(Test-PgsStoreRule $User.SID)}}
 }
 
-function Get-PgsFeatureState([string]$Hive) {
+function Get-PgsFeatureState([string]$Hive,[string]$Sid) {
  $state=[ordered]@{}
  foreach($entry in $PgsFeatures.GetEnumerator()) {
   $on=$true
@@ -193,12 +289,13 @@ function Get-PgsFeatureState([string]$Hive) {
    $items=Get-PgsRegList $Hive $entry.Value.List
    if($null -eq $items -or $items.Count -eq 0){$on=$false}
   }
+  if($entry.Value.AppLocker -and $on -and (Test-PgsAppLockerSupported) -and -not (Test-PgsStoreRule $Sid)){$on=$false}
   $state[$entry.Key]=$on
  }
  $state
 }
 
-function Set-PgsFeatures([string]$Hive,[hashtable]$Desired,[string[]]$Blocked) {
+function Set-PgsFeatures([string]$Hive,$User,[hashtable]$Desired,[string[]]$Blocked) {
  foreach($entry in $PgsFeatures.GetEnumerator()) {
   $on=[bool]$Desired[$entry.Key]
   foreach($reg in $entry.Value.Regs) {
@@ -208,6 +305,7 @@ function Set-PgsFeatures([string]$Hive,[hashtable]$Desired,[string[]]$Blocked) {
    Remove-PgsRegKey $Hive $entry.Value.List
    if($on){$i=0; foreach($app in $Blocked){$i++; Set-PgsRegValue $Hive $entry.Value.List ([string]$i) 'String' $app}}
   }
+  if($entry.Value.AppLocker){Set-PgsStoreRule $User.SID $User.Name $on}
  }
 }
 
@@ -236,6 +334,10 @@ function Restore-PgsSnapshot([string]$Hive,$Snap) {
    [Microsoft.Win32.Registry]::Users.CreateSubKey("$Hive\$($list.Sub)").Dispose()
    if($list.Items){foreach($p in $list.Items.PSObject.Properties){Set-PgsRegValue $Hive $list.Sub $p.Name 'String' ([string]$p.Value)}}
   }
+ }
+ # Backups made before Store support have no StoreAppLocker entry: leave AppLocker as it is.
+ if($Snap.PSObject.Properties['StoreAppLocker'] -and $Snap.StoreAppLocker.Supported) {
+  Set-PgsStoreRule $Snap.SID $Snap.Name ([bool]$Snap.StoreAppLocker.RulePresent)
  }
 }
 
@@ -266,7 +368,7 @@ function Invoke-PgsInspect([string]$Name) {
   param($hive,$live)
   $items=Get-PgsRegList $hive $PgsFeatures['ShellBlock'].List
   $blockedNow=@(); if($items){$blockedNow=@($items.Values)}
-  [pscustomobject]@{Name=$target.Name;SignedIn=$live;State=(Get-PgsFeatureState $hive);Blocked=$blockedNow}
+  [pscustomobject]@{Name=$target.Name;SignedIn=$live;State=(Get-PgsFeatureState $hive $target.SID);Blocked=$blockedNow}
  }
 }
 
@@ -289,14 +391,14 @@ function Invoke-PgsChange([string]$Name,[string]$Mode,[hashtable]$Desired=@{},[s
   Write-PgsLog "$Mode $($target.Name) ($($target.SID)): backup $saved"
   "$($target.Name): backup saved to $saved"
   try {
-   if($Mode -eq 'Apply'){Set-PgsFeatures $hive $Desired $Blocked}
-   elseif($Mode -eq 'Clear'){Set-PgsFeatures $hive @{} @()}
+   if($Mode -eq 'Apply'){Set-PgsFeatures $hive $target $Desired $Blocked}
+   elseif($Mode -eq 'Clear'){Set-PgsFeatures $hive $target @{} @()}
    else{Restore-PgsSnapshot $hive $restoreFrom}
   } catch {
    Write-PgsLog "$Mode $($target.Name) FAILED: $($_.Exception.Message)"
    throw "$Mode failed for $($target.Name): $($_.Exception.Message) The settings from before are saved in $saved - use Restore with that file."
   }
-  $state=Get-PgsFeatureState $hive
+  $state=Get-PgsFeatureState $hive $target.SID
   $active=@($state.Keys | Where-Object {$state[$_]})
   $summary='none'; if($active.Count){$summary=$active -join ', '}
   Write-PgsLog "$Mode $($target.Name) done. Active: $summary"

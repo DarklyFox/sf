@@ -15,7 +15,8 @@ Add-Type -AssemblyName System.Drawing
 
 $form=New-Object Windows.Forms.Form
 $form.Text='PGS Kiosk Manager 4.0 - local user restrictions'
-$form.StartPosition='CenterScreen'; $form.Size=New-Object Drawing.Size(940,870)
+$form.StartPosition='CenterScreen'; $form.AutoScroll=$true
+$form.Size=New-Object Drawing.Size(940,[Math]::Min(900,[Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height))
 $form.Font=New-Object Drawing.Font('Segoe UI',9)
 
 $label=New-Object Windows.Forms.Label
@@ -35,7 +36,7 @@ $info.Text="Checked = restriction ON, unchecked = OFF. 'Apply' makes the selecte
 $info.SetBounds(460,90,445,128); $form.Controls.Add($info)
 
 $group=New-Object Windows.Forms.GroupBox
-$group.Text='Restrictions'; $group.SetBounds(15,228,890,330); $form.Controls.Add($group)
+$group.Text='Restrictions'; $group.SetBounds(15,228,890,360); $form.Controls.Add($group)
 $checks=[ordered]@{}; $n=0
 foreach($entry in $PgsFeatures.GetEnumerator()) {
  $ck=New-Object Windows.Forms.CheckBox
@@ -48,14 +49,14 @@ $blockLabel.SetBounds(15,(28+$n*30),860,20); $group.Controls.Add($blockLabel)
 $blockBox=New-Object Windows.Forms.TextBox
 $blockBox.Text=($PgsDefaultBlocked -join ', '); $blockBox.SetBounds(15,(50+$n*30),860,24); $group.Controls.Add($blockBox)
 
-$apply=New-Object Windows.Forms.Button; $apply.Text='Apply to selected users'; $apply.SetBounds(15,568,215,36); $form.Controls.Add($apply)
-$clear=New-Object Windows.Forms.Button; $clear.Text='Turn all restrictions off'; $clear.SetBounds(240,568,215,36); $form.Controls.Add($clear)
-$restore=New-Object Windows.Forms.Button; $restore.Text='Restore from backup...'; $restore.SetBounds(465,568,215,36); $form.Controls.Add($restore)
-$openDir=New-Object Windows.Forms.Button; $openDir.Text='Open backups folder'; $openDir.SetBounds(690,568,215,36); $form.Controls.Add($openDir)
+$apply=New-Object Windows.Forms.Button; $apply.Text='Apply to selected users'; $apply.SetBounds(15,598,215,36); $form.Controls.Add($apply)
+$clear=New-Object Windows.Forms.Button; $clear.Text='Turn all restrictions off'; $clear.SetBounds(240,598,215,36); $form.Controls.Add($clear)
+$restore=New-Object Windows.Forms.Button; $restore.Text='Restore from backup...'; $restore.SetBounds(465,598,215,36); $form.Controls.Add($restore)
+$openDir=New-Object Windows.Forms.Button; $openDir.Text='Open backups folder'; $openDir.SetBounds(690,598,215,36); $form.Controls.Add($openDir)
 
 $log=New-Object Windows.Forms.TextBox
 $log.Multiline=$true; $log.ReadOnly=$true; $log.ScrollBars='Vertical'; $log.WordWrap=$true
-$log.SetBounds(15,615,890,200); $form.Controls.Add($log)
+$log.SetBounds(15,645,890,200); $form.Controls.Add($log)
 
 function Append([string]$Message) {
  $log.AppendText(('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'),$Message.Trim())+"`r`n")
