@@ -1,10 +1,11 @@
-# PGS Kiosk Manager 4.0 - per-user restriction engine (Windows PowerShell 5.1)
+# PGS Kiosk Manager 4.1 - per-user restriction engine (Windows PowerShell 5.1)
 #
 # The GUI dot-sources this file to get its functions. It can also be used from an
 # elevated PowerShell prompt:
 #   .\PGS-Engine.ps1 -Action Users
 #   .\PGS-Engine.ps1 -Action Inspect -UserName PaulS
 #   .\PGS-Engine.ps1 -Action Apply   -UserName PaulS,HayleyM -Enable TaskManager,RunMenu
+#   .\PGS-Engine.ps1 -Action Apply   -UserName PaulS -Enable Websites -AllowedSites "google.com,wikipedia.org"
 #   .\PGS-Engine.ps1 -Action Clear   -UserName PaulS
 #   .\PGS-Engine.ps1 -Action Restore -UserName PaulS -BackupFile C:\ProgramData\PGS-Kiosk-Manager\Backups\PaulS\file.json
 # Apply turns ON the features named in -Enable and turns OFF every other feature.
@@ -13,6 +14,7 @@ param(
  [string[]]$UserName=@(),
  [string[]]$Enable=@(),
  [string[]]$BlockedApps=@(),
+ [string[]]$AllowedSites=@(),
  [string]$BackupFile=''
 )
 
@@ -26,9 +28,13 @@ $PolDesktop='Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop'
 $PolCmd='Software\Policies\Microsoft\Windows\System'
 $PolStore='Software\Policies\Microsoft\WindowsStore'
 $PolExplorer2='Software\Policies\Microsoft\Windows\Explorer'
+# Browsers that read per-user URL policies: Microsoft Edge, Google Chrome, Brave.
+$PgsBrowserPolicies=@('Software\Policies\Microsoft\Edge','Software\Policies\Google\Chrome','Software\Policies\BraveSoftware\Brave')
 
 # Every feature the tool manages. To add one, add an entry here: each Regs item is a
 # DWORD written under the user's hive when the feature is ON and deleted when OFF.
+# Lists are registry keys filled with numbered string values when ON and deleted when OFF.
+# Their Source says what goes in: 'Blocked' = program list, 'Sites' = allowed websites, 'All' = "*".
 # AppLocker=$true additionally adds a per-user AppLocker rule that blocks the Microsoft Store.
 $PgsFeatures=[ordered]@{
  HideDrives   =@{Label='Hide drive icons in This PC (personal folders stay accessible)'; Regs=@(@{Sub=$PolExplorer;Name='NoDrives';Data=67108863})}
@@ -39,7 +45,9 @@ $PgsFeatures=[ordered]@{
  RegistryTools=@{Label='Disable Registry Editor'; Regs=@(@{Sub=$PolSystem;Name='DisableRegistryTools';Data=1})}
  Wallpaper    =@{Label='Prevent changing the desktop wallpaper'; Regs=@(@{Sub=$PolDesktop;Name='NoChangingWallPaper';Data=1})}
  Store        =@{Label='Block Microsoft Store (Store policy + per-user AppLocker rule)'; Regs=@(@{Sub=$PolStore;Name='RemoveWindowsStore';Data=1},@{Sub=$PolExplorer2;Name='NoUseStoreOpenWith';Data=1}); AppLocker=$true}
- ShellBlock   =@{Label='Block the programs listed below (Explorer launch block, best effort)'; Regs=@(@{Sub=$PolExplorer;Name='DisallowRun';Data=1}); List="$PolExplorer\DisallowRun"}
+ ShellBlock   =@{Label='Block the programs listed below (Explorer launch block, best effort)'; Regs=@(@{Sub=$PolExplorer;Name='DisallowRun';Data=1}); Lists=@(@{Sub="$PolExplorer\DisallowRun";Source='Blocked'})}
+ Websites     =@{Label='Allow only the websites listed below (Edge, Chrome, Brave)'; Regs=@()
+                 Lists=@(foreach($pgsBrowser in $PgsBrowserPolicies){@{Sub="$pgsBrowser\URLBlocklist";Source='All'}; @{Sub="$pgsBrowser\URLAllowlist";Source='Sites'}})}
 }
 $PgsDefaultBlocked=@('powershell.exe','powershell_ise.exe','pwsh.exe','cmd.exe','wt.exe','regedit.exe','reg.exe','mmc.exe')
 
@@ -130,7 +138,13 @@ function Invoke-PgsWithHive($User,[scriptblock]$Body) {
  }
 }
 
+# Never touch a hive root: an empty subkey path would mean the whole user registry.
+function Assert-PgsPath([string]$Hive,[string]$Sub) {
+ if([string]::IsNullOrWhiteSpace($Hive) -or [string]::IsNullOrWhiteSpace($Sub)){throw 'Internal error: empty registry path. Nothing was changed for this value.'}
+}
+
 function Get-PgsRegValue([string]$Hive,[string]$Sub,[string]$Name) {
+ Assert-PgsPath $Hive $Sub
  $key=[Microsoft.Win32.Registry]::Users.OpenSubKey("$Hive\$Sub",$false)
  if($null -eq $key){return $null}
  try {
@@ -143,6 +157,7 @@ function Get-PgsRegValue([string]$Hive,[string]$Sub,[string]$Name) {
 }
 
 function Set-PgsRegValue([string]$Hive,[string]$Sub,[string]$Name,[string]$Kind,$Data) {
+ Assert-PgsPath $Hive $Sub
  if($Kind -eq 'DWord'){$n=[int64]$Data; if($n -gt [int32]::MaxValue){$n-=4294967296}; $Data=[int32]$n}
  elseif($Kind -eq 'QWord'){$Data=[int64]$Data}
  elseif($Kind -eq 'MultiString'){$Data=[string[]]@($Data)}
@@ -153,12 +168,14 @@ function Set-PgsRegValue([string]$Hive,[string]$Sub,[string]$Name,[string]$Kind,
 }
 
 function Remove-PgsRegValue([string]$Hive,[string]$Sub,[string]$Name) {
+ Assert-PgsPath $Hive $Sub
  $key=[Microsoft.Win32.Registry]::Users.OpenSubKey("$Hive\$Sub",$true)
  if($null -ne $key){ try { $key.DeleteValue($Name,$false) } finally { $key.Dispose() } }
 }
 
 # Returns the string values of a key as an ordered dictionary, or $null if the key is missing.
 function Get-PgsRegList([string]$Hive,[string]$Sub) {
+ Assert-PgsPath $Hive $Sub
  $key=[Microsoft.Win32.Registry]::Users.OpenSubKey("$Hive\$Sub",$false)
  if($null -eq $key){return $null}
  try {
@@ -169,6 +186,7 @@ function Get-PgsRegList([string]$Hive,[string]$Sub) {
 }
 
 function Remove-PgsRegKey([string]$Hive,[string]$Sub) {
+ Assert-PgsPath $Hive $Sub
  [Microsoft.Win32.Registry]::Users.DeleteSubKeyTree("$Hive\$Sub",$false)
 }
 
@@ -263,14 +281,14 @@ function Save-PgsAppLocker([xml]$Doc) {
 function Get-PgsSnapshot([string]$Hive,$User) {
  $values=@(); $lists=@()
  foreach($feature in $PgsFeatures.Values) {
-  foreach($reg in $feature.Regs) {
+  foreach($reg in @($feature.Regs | Where-Object {$_})) {
    $cur=Get-PgsRegValue $Hive $reg.Sub $reg.Name
    if($cur){$values+=[pscustomobject]@{Sub=$reg.Sub;Name=$reg.Name;Present=$true;Kind=$cur.Kind;Data=$cur.Data}}
    else{$values+=[pscustomobject]@{Sub=$reg.Sub;Name=$reg.Name;Present=$false;Kind='';Data=$null}}
   }
-  if($feature.List) {
-   $items=Get-PgsRegList $Hive $feature.List
-   $lists+=[pscustomobject]@{Sub=$feature.List;Present=($null -ne $items);Items=$items}
+  foreach($list in @($feature.Lists | Where-Object {$_})) {
+   $items=Get-PgsRegList $Hive $list.Sub
+   $lists+=[pscustomobject]@{Sub=$list.Sub;Present=($null -ne $items);Items=$items}
   }
  }
  [pscustomobject]@{Format='PGS-v4';Computer=$env:COMPUTERNAME;Name=$User.Name;SID=$User.SID;When=(Get-Date).ToString('o');Values=$values;Lists=$lists
@@ -281,12 +299,12 @@ function Get-PgsFeatureState([string]$Hive,[string]$Sid) {
  $state=[ordered]@{}
  foreach($entry in $PgsFeatures.GetEnumerator()) {
   $on=$true
-  foreach($reg in $entry.Value.Regs) {
+  foreach($reg in @($entry.Value.Regs | Where-Object {$_})) {
    $cur=Get-PgsRegValue $Hive $reg.Sub $reg.Name
    if($null -eq $cur -or "$($cur.Data)" -ne "$($reg.Data)"){$on=$false}
   }
-  if($entry.Value.List) {
-   $items=Get-PgsRegList $Hive $entry.Value.List
+  foreach($list in @($entry.Value.Lists | Where-Object {$_})) {
+   $items=Get-PgsRegList $Hive $list.Sub
    if($null -eq $items -or $items.Count -eq 0){$on=$false}
   }
   if($entry.Value.AppLocker -and $on -and (Test-PgsAppLockerSupported) -and -not (Test-PgsStoreRule $Sid)){$on=$false}
@@ -295,15 +313,19 @@ function Get-PgsFeatureState([string]$Hive,[string]$Sid) {
  $state
 }
 
-function Set-PgsFeatures([string]$Hive,$User,[hashtable]$Desired,[string[]]$Blocked) {
+function Set-PgsFeatures([string]$Hive,$User,[hashtable]$Desired,[string[]]$Blocked,[string[]]$Sites) {
  foreach($entry in $PgsFeatures.GetEnumerator()) {
   $on=[bool]$Desired[$entry.Key]
-  foreach($reg in $entry.Value.Regs) {
+  foreach($reg in @($entry.Value.Regs | Where-Object {$_})) {
    if($on){Set-PgsRegValue $Hive $reg.Sub $reg.Name 'DWord' $reg.Data}else{Remove-PgsRegValue $Hive $reg.Sub $reg.Name}
   }
-  if($entry.Value.List) {
-   Remove-PgsRegKey $Hive $entry.Value.List
-   if($on){$i=0; foreach($app in $Blocked){$i++; Set-PgsRegValue $Hive $entry.Value.List ([string]$i) 'String' $app}}
+  foreach($list in @($entry.Value.Lists | Where-Object {$_})) {
+   Remove-PgsRegKey $Hive $list.Sub
+   if($on) {
+    $items=@('*')
+    if($list.Source -eq 'Blocked'){$items=$Blocked}elseif($list.Source -eq 'Sites'){$items=$Sites}
+    $i=0; foreach($item in $items){$i++; Set-PgsRegValue $Hive $list.Sub ([string]$i) 'String' $item}
+   }
   }
   if($entry.Value.AppLocker){Set-PgsStoreRule $User.SID $User.Name $on}
  }
@@ -325,10 +347,10 @@ function Convert-PgsV3Backup($Old) {
 
 function Restore-PgsSnapshot([string]$Hive,$Snap) {
  if($Snap.Format -eq 'PGS-v3'){$Snap=Convert-PgsV3Backup $Snap}
- foreach($v in @($Snap.Values)) {
+ foreach($v in @($Snap.Values | Where-Object {$_ -and $_.Sub})) {
   if($v.Present){Set-PgsRegValue $Hive $v.Sub $v.Name $v.Kind $v.Data}else{Remove-PgsRegValue $Hive $v.Sub $v.Name}
  }
- foreach($list in @($Snap.Lists)) {
+ foreach($list in @($Snap.Lists | Where-Object {$_ -and $_.Sub})) {
   Remove-PgsRegKey $Hive $list.Sub
   if($list.Present) {
    [Microsoft.Win32.Registry]::Users.CreateSubKey("$Hive\$($list.Sub)").Dispose()
@@ -361,20 +383,26 @@ function Save-PgsBackup($Snap,[string]$Reason) {
  $file
 }
 
-# Reads a user's current settings. Returns State (feature -> on/off) and the blocked program list.
+# Reads a user's current settings. Returns State (feature -> on/off), the blocked program list
+# and the allowed websites.
 function Invoke-PgsInspect([string]$Name) {
  $target=Get-PgsUser $Name
  Invoke-PgsWithHive $target {
   param($hive,$live)
-  $items=Get-PgsRegList $hive $PgsFeatures['ShellBlock'].List
+  $items=Get-PgsRegList $hive $PgsFeatures['ShellBlock'].Lists[0].Sub
   $blockedNow=@(); if($items){$blockedNow=@($items.Values)}
-  [pscustomobject]@{Name=$target.Name;SignedIn=$live;State=(Get-PgsFeatureState $hive $target.SID);Blocked=$blockedNow}
+  $sitesNow=@()
+  foreach($list in @($PgsFeatures['Websites'].Lists | Where-Object {$_.Source -eq 'Sites'})) {
+   $items=Get-PgsRegList $hive $list.Sub
+   if($items -and $items.Count){$sitesNow=@($items.Values); break}
+  }
+  [pscustomobject]@{Name=$target.Name;SignedIn=$live;State=(Get-PgsFeatureState $hive $target.SID);Blocked=$blockedNow;Sites=$sitesNow}
  }
 }
 
 # Apply: $Desired maps feature names to $true/$false (missing = off). Clear: everything off.
 # Restore: puts back the values saved in $BackupFile. Always saves a backup first.
-function Invoke-PgsChange([string]$Name,[string]$Mode,[hashtable]$Desired=@{},[string[]]$Blocked=@(),[string]$BackupFile='') {
+function Invoke-PgsChange([string]$Name,[string]$Mode,[hashtable]$Desired=@{},[string[]]$Blocked=@(),[string[]]$Sites=@(),[string]$BackupFile='') {
  if($Mode -notin @('Apply','Clear','Restore')){throw "Unknown mode $Mode."}
  $target=Get-PgsUser $Name
  $restoreFrom=$null
@@ -385,14 +413,16 @@ function Invoke-PgsChange([string]$Name,[string]$Mode,[hashtable]$Desired=@{},[s
   if($restoreFrom.SID -ne $target.SID){throw "The selected backup belongs to '$($restoreFrom.Name)', not '$($target.Name)'."}
  }
  if($Mode -eq 'Apply' -and $Desired['ShellBlock'] -and @($Blocked).Count -eq 0){throw 'Program blocking is checked but the program list is empty.'}
+ $Sites=ConvertTo-PgsSites $Sites
+ if($Mode -eq 'Apply' -and $Desired['Websites'] -and $Sites.Count -eq 0){throw 'Website whitelist is checked but the website list is empty.'}
  Invoke-PgsWithHive $target {
   param($hive,$live)
   $saved=Save-PgsBackup (Get-PgsSnapshot $hive $target) ('before-'+$Mode.ToLower())
   Write-PgsLog "$Mode $($target.Name) ($($target.SID)): backup $saved"
   "$($target.Name): backup saved to $saved"
   try {
-   if($Mode -eq 'Apply'){Set-PgsFeatures $hive $target $Desired $Blocked}
-   elseif($Mode -eq 'Clear'){Set-PgsFeatures $hive $target @{} @()}
+   if($Mode -eq 'Apply'){Set-PgsFeatures $hive $target $Desired $Blocked $Sites}
+   elseif($Mode -eq 'Clear'){Set-PgsFeatures $hive $target @{} @() @()}
    else{Restore-PgsSnapshot $hive $restoreFrom}
   } catch {
    Write-PgsLog "$Mode $($target.Name) FAILED: $($_.Exception.Message)"
@@ -403,12 +433,28 @@ function Invoke-PgsChange([string]$Name,[string]$Mode,[hashtable]$Desired=@{},[s
   $summary='none'; if($active.Count){$summary=$active -join ', '}
   Write-PgsLog "$Mode $($target.Name) done. Active: $summary"
   "$($target.Name): $Mode done. Active restrictions: $summary"
+  if($Mode -eq 'Apply' -and $Desired['Websites']){"$($target.Name): allowed websites: $($Sites -join ', '). Restart open browsers. Firefox and other browsers are not covered - block them with the program list."}
   if($live){"$($target.Name) is signed in right now: changes fully apply after they sign out and back in."}
  }
 }
 
 function Split-PgsList([string[]]$Items) {
  @($Items | ForEach-Object {$_ -split '[,;|\r\n]'} | ForEach-Object {$_.Trim()} | Where-Object {$_})
+}
+
+# Turns what the admin typed into browser URL-filter entries: no protocol, no "www.",
+# no wildcard prefix. "example.com" then allows example.com and all its subdomains.
+function ConvertTo-PgsSites([string[]]$Items) {
+ $out=New-Object System.Collections.Generic.List[string]
+ foreach($raw in @($Items | ForEach-Object {$_ -split '[,;\s]+'})) {
+  $site=$raw.Trim().ToLowerInvariant()
+  $site=$site -replace '^[a-z][a-z0-9+.-]*://',''
+  $site=$site -replace '^\*\.','' -replace '^www\.','' -replace '/+$',''
+  if(-not $site -or $site -eq '*'){continue}
+  if($site -notmatch '^[a-z0-9.\-]+(:\d+)?(/.*)?$'){throw "'$raw' is not a valid website. Enter names like example.com or docs.example.com/path."}
+  if(-not $out.Contains($site)){$out.Add($site)}
+ }
+ ,$out.ToArray()
 }
 
 # ---- Command-line mode (skipped when the GUI dot-sources this file) ----
@@ -433,8 +479,9 @@ if($Action -ne 'Library') {
     "$($r.Name)$(if($r.SignedIn){' (signed in)'})"
     foreach($e in $r.State.GetEnumerator()){'  {0,-14} {1}' -f $e.Key,$(if($e.Value){'ON'}else{'off'})}
     if($r.Blocked.Count){'  Blocked programs: '+($r.Blocked -join ', ')}
+    if($r.Sites.Count){'  Allowed websites: '+($r.Sites -join ', ')}
    } else {
-    Invoke-PgsChange $n $Action $wanted $apps $BackupFile
+    Invoke-PgsChange $n $Action $wanted $apps -Sites $AllowedSites -BackupFile $BackupFile
    }
   } catch { "ERROR: $n : $($_.Exception.Message)"; $failed=$true }
  }

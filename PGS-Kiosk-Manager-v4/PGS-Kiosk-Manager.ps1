@@ -1,4 +1,4 @@
-# PGS Kiosk Manager 4.0 - Windows PowerShell 5.1 GUI
+# PGS Kiosk Manager 4.1 - Windows PowerShell 5.1 GUI
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'PGS-Engine.ps1')
 
@@ -14,9 +14,9 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 
 $form=New-Object Windows.Forms.Form
-$form.Text='PGS Kiosk Manager 4.0 - local user restrictions'
+$form.Text='PGS Kiosk Manager 4.1 - local user restrictions'
 $form.StartPosition='CenterScreen'; $form.AutoScroll=$true
-$form.Size=New-Object Drawing.Size(940,[Math]::Min(900,[Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height))
+$form.Size=New-Object Drawing.Size(940,[Math]::Min(1000,[Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height))
 $form.Font=New-Object Drawing.Font('Segoe UI',9)
 
 $label=New-Object Windows.Forms.Label
@@ -36,7 +36,7 @@ $info.Text="Checked = restriction ON, unchecked = OFF. 'Apply' makes the selecte
 $info.SetBounds(460,90,445,128); $form.Controls.Add($info)
 
 $group=New-Object Windows.Forms.GroupBox
-$group.Text='Restrictions'; $group.SetBounds(15,228,890,360); $form.Controls.Add($group)
+$group.Text='Restrictions'; $group.SetBounds(15,228,890,490); $form.Controls.Add($group)
 $checks=[ordered]@{}; $n=0
 foreach($entry in $PgsFeatures.GetEnumerator()) {
  $ck=New-Object Windows.Forms.CheckBox
@@ -48,15 +48,21 @@ $blockLabel.Text='Programs to block (file names, separated by commas):'
 $blockLabel.SetBounds(15,(28+$n*30),860,20); $group.Controls.Add($blockLabel)
 $blockBox=New-Object Windows.Forms.TextBox
 $blockBox.Text=($PgsDefaultBlocked -join ', '); $blockBox.SetBounds(15,(50+$n*30),860,24); $group.Controls.Add($blockBox)
+$sitesLabel=New-Object Windows.Forms.Label
+$sitesLabel.Text='Allowed websites, one per line - no http:// or https:// needed (example.com also allows mail.example.com):'
+$sitesLabel.SetBounds(15,(82+$n*30),860,20); $group.Controls.Add($sitesLabel)
+$sitesBox=New-Object Windows.Forms.TextBox
+$sitesBox.Multiline=$true; $sitesBox.ScrollBars='Vertical'; $sitesBox.AcceptsReturn=$true
+$sitesBox.SetBounds(15,(104+$n*30),860,70); $group.Controls.Add($sitesBox)
 
-$apply=New-Object Windows.Forms.Button; $apply.Text='Apply to selected users'; $apply.SetBounds(15,598,215,36); $form.Controls.Add($apply)
-$clear=New-Object Windows.Forms.Button; $clear.Text='Turn all restrictions off'; $clear.SetBounds(240,598,215,36); $form.Controls.Add($clear)
-$restore=New-Object Windows.Forms.Button; $restore.Text='Restore from backup...'; $restore.SetBounds(465,598,215,36); $form.Controls.Add($restore)
-$openDir=New-Object Windows.Forms.Button; $openDir.Text='Open backups folder'; $openDir.SetBounds(690,598,215,36); $form.Controls.Add($openDir)
+$apply=New-Object Windows.Forms.Button; $apply.Text='Apply to selected users'; $apply.SetBounds(15,728,215,36); $form.Controls.Add($apply)
+$clear=New-Object Windows.Forms.Button; $clear.Text='Turn all restrictions off'; $clear.SetBounds(240,728,215,36); $form.Controls.Add($clear)
+$restore=New-Object Windows.Forms.Button; $restore.Text='Restore from backup...'; $restore.SetBounds(465,728,215,36); $form.Controls.Add($restore)
+$openDir=New-Object Windows.Forms.Button; $openDir.Text='Open backups folder'; $openDir.SetBounds(690,728,215,36); $form.Controls.Add($openDir)
 
 $log=New-Object Windows.Forms.TextBox
 $log.Multiline=$true; $log.ReadOnly=$true; $log.ScrollBars='Vertical'; $log.WordWrap=$true
-$log.SetBounds(15,645,890,200); $form.Controls.Add($log)
+$log.SetBounds(15,775,890,180); $form.Controls.Add($log)
 
 function Append([string]$Message) {
  $log.AppendText(('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'),$Message.Trim())+"`r`n")
@@ -100,6 +106,7 @@ function LoadSelectedState {
   $r=Invoke-PgsInspect $names[0]
   foreach($k in $checks.Keys){$checks[$k].Checked=[bool]$r.State[$k]}
   if(@($r.Blocked).Count){$blockBox.Text=(@($r.Blocked) -join ', ')}
+  $sitesBox.Text=(@($r.Sites) -join "`r`n")
   $active=@($r.State.Keys | Where-Object {$r.State[$_]})
   $summary='none'; if($active.Count){$summary=$active -join ', '}
   Append "$($r.Name): current restrictions: $summary"
@@ -116,10 +123,17 @@ $apply.Add_Click({
  if($names.Count -eq 0){Append 'Select at least one user.'; return}
  $desired=@{}; foreach($k in $checks.Keys){$desired[$k]=$checks[$k].Checked}
  $blocked=Split-PgsList @($blockBox.Text)
+ try { $sites=ConvertTo-PgsSites @($sitesBox.Text) } catch { Append "ERROR: $($_.Exception.Message)"; return }
+ if($desired['Websites'] -and $sites.Count -eq 0){Append 'ERROR: Website whitelist is checked but no websites are listed.'; return}
  $on=@($checks.Keys | Where-Object {$desired[$_]})
  $summary='none (all restrictions off)'; if($on.Count){$summary=$on -join ', '}
- if(-not (Confirm-Pgs "Apply to: $($names -join ', ')`n`nRestrictions ON: $summary`n`nEverything else is turned OFF. A backup is saved first.")){return}
- foreach($name in $names){ [void](Run-Pgs { Invoke-PgsChange $name 'Apply' $desired $blocked }) }
+ $extra=''
+ if($desired['Websites']){
+  $extra="`n`nAllowed websites: $($sites -join ', ')`nEvery other website is blocked in Edge, Chrome and Brave."
+  if(-not $desired['ShellBlock'] -or -not ($blocked -contains 'firefox.exe')){$extra+="`nFirefox and other browsers are NOT covered: add firefox.exe etc. to the program list and tick program blocking."}
+ }
+ if(-not (Confirm-Pgs "Apply to: $($names -join ', ')`n`nRestrictions ON: $summary$extra`n`nEverything else is turned OFF. A backup is saved first.")){return}
+ foreach($name in $names){ [void](Run-Pgs { Invoke-PgsChange $name 'Apply' $desired $blocked $sites }) }
 })
 
 $clear.Add_Click({

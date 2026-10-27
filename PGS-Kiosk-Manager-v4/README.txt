@@ -1,4 +1,4 @@
-PGS Kiosk Manager 4.0
+PGS Kiosk Manager 4.1
 Full instructions: PGS-Kiosk-Manager-Guide.pdf
 
 Turns individual restrictions on or off for standard (non-administrator) local
@@ -21,6 +21,7 @@ RESTRICTIONS
 - Disable Registry Editor
 - Prevent changing the desktop wallpaper
 - Block Microsoft Store (Store policy + a per-user AppLocker rule; see below)
+- Allow only the websites you list (Edge, Chrome, Brave; see below)
 - Block a list of programs you choose (default: PowerShell, cmd, Terminal,
   regedit, reg, MMC). Editable in the text box.
 To add more restrictions, add an entry to $PgsFeatures in PGS-Engine.ps1.
@@ -42,6 +43,7 @@ COMMAND LINE (elevated PowerShell)
   .\PGS-Engine.ps1 -Action Users
   .\PGS-Engine.ps1 -Action Inspect -UserName PaulS
   .\PGS-Engine.ps1 -Action Apply   -UserName PaulS,HayleyM -Enable TaskManager,RunMenu,Store,ShellBlock
+  .\PGS-Engine.ps1 -Action Apply   -UserName PaulS -Enable Websites -AllowedSites "google.com,wikipedia.org"
   .\PGS-Engine.ps1 -Action Clear   -UserName PaulS
   .\PGS-Engine.ps1 -Action Restore -UserName PaulS -BackupFile <path to .json>
 
@@ -52,6 +54,13 @@ Windows Pro, Enterprise and Education, not Home. The first time it is used, the
 tool turns on AppLocker packaged-app rules for the PC together with the standard
 "allow all signed packaged apps" rule, so other users and apps are unaffected.
 It also starts the Application Identity (AppIDSvc) service.
+
+WEBSITE WHITELIST
+Type one website per line in "Allowed websites", without http:// or https://
+(for example google.com). example.com also allows its subdomains such as
+mail.example.com. Every other website is blocked in Edge, Chrome and Brave.
+Firefox and other browsers are NOT covered: add firefox.exe, opera.exe etc. to
+the program list and tick program blocking. Restart the browser after a change.
 
 LIMITATIONS
 - Per-user policies, not a security-grade single-app kiosk. Program blocking
