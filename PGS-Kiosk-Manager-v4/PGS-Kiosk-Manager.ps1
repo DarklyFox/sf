@@ -1,4 +1,4 @@
-# PGS Kiosk Manager 4.1 - Windows PowerShell 5.1 GUI
+# PGS Kiosk Manager 4.2 - Windows PowerShell 5.1 GUI
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'PGS-Engine.ps1')
 
@@ -14,7 +14,7 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 
 $form=New-Object Windows.Forms.Form
-$form.Text='PGS Kiosk Manager 4.1 - local user restrictions'
+$form.Text='PGS Kiosk Manager 4.2 - local user restrictions'
 $form.StartPosition='CenterScreen'; $form.AutoScroll=$true
 $form.Size=New-Object Drawing.Size(940,[Math]::Min(1000,[Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height))
 $form.Font=New-Object Drawing.Font('Segoe UI',9)
@@ -129,8 +129,8 @@ $apply.Add_Click({
  $summary='none (all restrictions off)'; if($on.Count){$summary=$on -join ', '}
  $extra=''
  if($desired['Websites']){
-  $extra="`n`nAllowed websites: $($sites -join ', ')`nEvery other website is blocked in Edge, Chrome and Brave."
-  if(-not $desired['ShellBlock'] -or -not ($blocked -contains 'firefox.exe')){$extra+="`nFirefox and other browsers are NOT covered: add firefox.exe etc. to the program list and tick program blocking."}
+  $extra="`n`nAllowed websites: $($sites -join ', ')`nEvery other website is blocked in Microsoft Edge."
+  if(-not $desired['ShellBlock'] -or -not ($blocked -contains 'chrome.exe')){$extra+="`nOnly Edge is restricted. To stop other browsers being used, add chrome.exe, firefox.exe, brave.exe, opera.exe to the program list and tick program blocking."}
  }
  if(-not (Confirm-Pgs "Apply to: $($names -join ', ')`n`nRestrictions ON: $summary$extra`n`nEverything else is turned OFF. A backup is saved first.")){return}
  foreach($name in $names){ [void](Run-Pgs { Invoke-PgsChange $name 'Apply' $desired $blocked $sites }) }

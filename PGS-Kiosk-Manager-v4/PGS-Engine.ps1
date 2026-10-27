@@ -1,4 +1,4 @@
-# PGS Kiosk Manager 4.1 - per-user restriction engine (Windows PowerShell 5.1)
+# PGS Kiosk Manager 4.2 - per-user restriction engine (Windows PowerShell 5.1)
 #
 # The GUI dot-sources this file to get its functions. It can also be used from an
 # elevated PowerShell prompt:
@@ -28,8 +28,8 @@ $PolDesktop='Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop'
 $PolCmd='Software\Policies\Microsoft\Windows\System'
 $PolStore='Software\Policies\Microsoft\WindowsStore'
 $PolExplorer2='Software\Policies\Microsoft\Windows\Explorer'
-# Browsers that read per-user URL policies: Microsoft Edge, Google Chrome, Brave.
-$PgsBrowserPolicies=@('Software\Policies\Microsoft\Edge','Software\Policies\Google\Chrome','Software\Policies\BraveSoftware\Brave')
+# The website whitelist is applied to Microsoft Edge only (per-user Edge policy).
+$PgsBrowserPolicies=@('Software\Policies\Microsoft\Edge')
 
 # Every feature the tool manages. To add one, add an entry here: each Regs item is a
 # DWORD written under the user's hive when the feature is ON and deleted when OFF.
@@ -46,7 +46,7 @@ $PgsFeatures=[ordered]@{
  Wallpaper    =@{Label='Prevent changing the desktop wallpaper'; Regs=@(@{Sub=$PolDesktop;Name='NoChangingWallPaper';Data=1})}
  Store        =@{Label='Block Microsoft Store (Store policy + per-user AppLocker rule)'; Regs=@(@{Sub=$PolStore;Name='RemoveWindowsStore';Data=1},@{Sub=$PolExplorer2;Name='NoUseStoreOpenWith';Data=1}); AppLocker=$true}
  ShellBlock   =@{Label='Block the programs listed below (Explorer launch block, best effort)'; Regs=@(@{Sub=$PolExplorer;Name='DisallowRun';Data=1}); Lists=@(@{Sub="$PolExplorer\DisallowRun";Source='Blocked'})}
- Websites     =@{Label='Allow only the websites listed below (Edge, Chrome, Brave)'; Regs=@()
+ Websites     =@{Label='Allow only the websites listed below in Microsoft Edge'; Regs=@()
                  Lists=@(foreach($pgsBrowser in $PgsBrowserPolicies){@{Sub="$pgsBrowser\URLBlocklist";Source='All'}; @{Sub="$pgsBrowser\URLAllowlist";Source='Sites'}})}
 }
 $PgsDefaultBlocked=@('powershell.exe','powershell_ise.exe','pwsh.exe','cmd.exe','wt.exe','regedit.exe','reg.exe','mmc.exe')
@@ -433,7 +433,7 @@ function Invoke-PgsChange([string]$Name,[string]$Mode,[hashtable]$Desired=@{},[s
   $summary='none'; if($active.Count){$summary=$active -join ', '}
   Write-PgsLog "$Mode $($target.Name) done. Active: $summary"
   "$($target.Name): $Mode done. Active restrictions: $summary"
-  if($Mode -eq 'Apply' -and $Desired['Websites']){"$($target.Name): allowed websites: $($Sites -join ', '). Restart open browsers. Firefox and other browsers are not covered - block them with the program list."}
+  if($Mode -eq 'Apply' -and $Desired['Websites']){"$($target.Name): allowed websites: $($Sites -join ', '). Close and reopen Edge. Other browsers are not covered - block them with the program list."}
   if($live){"$($target.Name) is signed in right now: changes fully apply after they sign out and back in."}
  }
 }
